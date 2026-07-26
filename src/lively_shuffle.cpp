@@ -19,6 +19,10 @@
 #include <cstdlib>
 #include <algorithm>
 #include <ctime>
+#include <mfapi.h>
+#include <mfidl.h>
+#include <mfreadwrite.h>
+#include <propvarutil.h>
 
 namespace fs = std::filesystem;
 
@@ -66,47 +70,39 @@ void loadPaths() {
     }
 }
 
-int readShuffleDelay() {
-    std::ifstream file("shuffle_settings.txt");
-    if (!file) return 600;
-
-    std::string line;
-    while (getline(file, line)) {
-        size_t pos = line.find('=');
-        if (pos == std::string::npos) continue;
-
-        std::string key = line.substr(0, pos);
-        std::string value = line.substr(pos + 1);
-
-        key.erase(0, key.find_first_not_of(" \t\""));
-        key.erase(key.find_last_not_of(" \t\"") + 1);
-
-        value.erase(0, value.find_first_not_of(" \t\""));
-        value.erase(value.find_last_not_of(" \t\"") + 1);
-
-        if (key == "time_delay") {
-            try {
-                int delay = std::stoi(value);
-                if (delay > 0) return delay;
-            } catch (...) {
-                return 600;
-            }
-        }
-    }
-    return 600;
-}
-
 int getNumDisplays() { return GetSystemMetrics(SM_CMONITORS); }
 
 std::vector<std::string> getWallpapers(const std::string& folder) {
     std::vector<std::string> wallpapers;
     for (const auto& entry : fs::directory_iterator(folder)) {
         std::string ext = entry.path().extension().string();
-        if (ext == ".jpg" || ext == ".png" || ext == ".gif" || ext == ".mp4" || ext == ".mov" || ext == ".avi") {
+        if (ext == ".mp4" || ext == ".mov") {
             wallpapers.push_back(entry.path().string());
         }
     }
     return wallpapers;
+}
+
+int getVideoDurationSeconds(const std::string& path) {
+    MFStartup(MF_VERSION);
+
+    int seconds = 0;
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, NULL, 0);
+    std::wstring wpath(wlen, 0);
+    MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, &wpath[0], wlen);
+
+    IMFSourceReader* reader = nullptr;
+    if (SUCCEEDED(MFCreateSourceReaderFromURL(wpath.c_str(), nullptr, &reader))) {
+        PROPVARIANT var;
+        if (SUCCEEDED(reader->GetPresentationAttribute(MF_SOURCE_READER_MEDIASOURCE, MF_PD_DURATION, &var))) {
+            seconds = static_cast<int>(var.uhVal.QuadPart / 10000000ULL);
+            PropVariantClear(&var);
+        }
+        reader->Release();
+    }
+
+    MFShutdown();
+    return seconds;
 }
 
 void setWallpaper(int display, const std::string& wallpaper) {
@@ -127,8 +123,11 @@ void setWallpaper(int display, const std::string& wallpaper) {
 
 void initializeWallpapers(int numDisplays, const std::vector<std::string>& wallpapers) {
     if (wallpapers.empty()) return;
-    for (int i = 0; i < numDisplays; i++)
-        setWallpaper(i, wallpapers[rand() % wallpapers.size()]);
+    for (int i = 0; i < numDisplays; i++) {
+        int randomWallInd = rand() % wallpapers.size();
+        shuffleDelay = getVideoDurationSeconds(wallpapers[randomWallInd]);
+        setWallpaper(i, wallpapers[randomWallInd]);
+    }
 }
 
 void wallpaperTimerThread() {
@@ -223,7 +222,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     srand((unsigned int)time(0));
 
     loadPaths();
-    shuffleDelay = readShuffleDelay();
     initializeWallpapers(getNumDisplays(), getWallpapers(wallpaperFolder));
 
     WNDCLASSA wc = {};
